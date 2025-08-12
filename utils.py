@@ -220,6 +220,110 @@ DAYS = list(range(7))
 def _safe_div(a: float, b: float) -> float:
     return float(a) / float(b) if b not in (0, 0.0) else 0.0
 
+
+#################################################################################################
+# Visualization functions
+#################################################################################################
+
+def visualize(_df):
+    # === Pre-split visualizations by gender (EDA only) ===
+    # Build user-level features on all users (no leakage into training; this is just EDA)
+    X_all = build_user_features(_df)
+
+    labels_unique = _df[['user_id', 'gender']].drop_duplicates(subset='user_id')
+    X_all_l = X_all.merge(labels_unique, on='user_id', how='left')
+
+    # Mean number of transactions by gender
+    plt.figure(figsize=(5,4))
+    sns.barplot(data=X_all_l, x='gender', y='num_transactions', estimator=np.mean, errorbar=None)
+    plt.title('Mean number of transactions by gender')
+    plt.ylabel('mean num_transactions')
+    plt.show()
+
+    # Mean percentage of '-' descriptions by gender (pct of missing/placeholder merchant)
+    # Compute directly from raw transactions to avoid relying on a stored feature
+    dash_share = (
+        _df.groupby('user_id', observed=True)['description']
+           .apply(lambda s: (s == '-').mean())
+           .reset_index(name='pct_dash_description')
+    )
+    dash_share = dash_share.merge(labels_unique, on='user_id', how='left')
+    plt.figure(figsize=(5,4))
+    sns.barplot(data=dash_share, x='gender', y='pct_dash_description', estimator=np.mean, errorbar=None)
+    plt.title("Mean '-' description share by gender")
+    plt.ylabel('mean pct_dash_description')
+    plt.show()
+
+    # Mean total spend and income by gender
+    fig, axes = plt.subplots(1, 2, figsize=(10,4))
+    sns.barplot(data=X_all_l, x='gender', y='total_spend', estimator=np.mean, errorbar=None, ax=axes[0])
+    axes[0].set_title('Mean total spend by gender'); axes[0].set_ylabel('mean total_spend')
+    sns.barplot(data=X_all_l, x='gender', y='total_income', estimator=np.mean, errorbar=None, ax=axes[1])
+    axes[1].set_title('Mean total income by gender'); axes[1].set_ylabel('mean total_income')
+    plt.tight_layout(); plt.show()
+
+    # Mean months active and mean active days per month by gender
+    fig, axes = plt.subplots(1, 2, figsize=(10,4))
+    sns.barplot(data=X_all_l, x='gender', y='num_active_months', estimator=np.mean, errorbar=None, ax=axes[0])
+    axes[0].set_title('Mean number of active months by gender'); axes[0].set_ylabel('mean num_active_months')
+    sns.barplot(data=X_all_l, x='gender', y='active_days_per_month_mean', estimator=np.mean, errorbar=None, ax=axes[1])
+    axes[1].set_title('Mean active days per month by gender'); axes[1].set_ylabel('mean active_days_per_month_mean')
+    plt.tight_layout(); plt.show()
+
+    # Mean transaction fraction per category by gender
+    cat_cols = [c for c in X_all.columns if c.startswith('cat_tx_frac__')]
+    cat_long = (
+        X_all_l[['user_id', 'gender'] + cat_cols]
+        .melt(id_vars=['user_id','gender'], var_name='cat', value_name='tx_frac')
+    )
+    cat_long['cat'] = cat_long['cat'].str.replace('cat_tx_frac__', '', regex=False)
+    plt.figure(figsize=(12,6))
+    sns.barplot(data=cat_long, x='cat', y='tx_frac', hue='gender', estimator=np.mean, errorbar=None)
+    plt.title('Mean transaction fraction per category by gender (all users)')
+    plt.xticks(rotation=90); plt.tight_layout(); plt.show()
+
+    # Fraction of transactions on each day of week by gender (mean per-user)
+    dow_cols = [c for c in X_all.columns if c.startswith('dow_frac__')]
+    dow_long = (
+        X_all_l[['user_id', 'gender'] + dow_cols]
+        .melt(id_vars=['user_id','gender'], var_name='dow', value_name='frac')
+    )
+    dow_long['dow'] = dow_long['dow'].str.replace('dow_frac__', '', regex=False).astype(int)
+    dow_name_map = {0:'Mon',1:'Tue',2:'Wed',3:'Thu',4:'Fri',5:'Sat',6:'Sun'}
+    dow_long['dow_name'] = dow_long['dow'].map(dow_name_map)
+
+    plt.figure(figsize=(10,4))
+    sns.barplot(data=dow_long, x='dow_name', y='frac', hue='gender', estimator=np.mean, errorbar=None)
+    plt.title('Mean fraction of transactions by day-of-week (by gender)')
+    plt.xlabel('day of week'); plt.ylabel('mean fraction')
+    plt.tight_layout(); plt.show()
+
+    # Top 10 merchant descriptions by gender (counts)
+
+    def top_n_merchants_by_gender(df_tx, n=10, drop_dash=True):
+        out = {}
+        for g in ['F', 'M']:
+            gdf = df_tx[df_tx['gender'] == g]
+            desc = gdf['description']
+            if drop_dash:
+                desc = desc[desc != '-']
+            top = desc.value_counts().head(n).reset_index()
+            top.columns = ['description', 'count']
+            out[g] = top
+        return out
+
+    tops = top_n_merchants_by_gender(_df, n=10, drop_dash=True)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+    for ax, g in zip(axes, ['F', 'M']):
+        data = tops[g]
+        sns.barplot(data=data, x='count', y='description', ax=ax, color='steelblue')
+        ax.set_title(f'Top {len(data)} merchants by count — {g}')
+        ax.set_xlabel('count'); ax.set_ylabel('merchant (description)')
+    plt.tight_layout(); plt.show()
+
+
+
 #################################################################################################
 # Feature builder
 #################################################################################################
@@ -236,7 +340,6 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
         - num_unique_descriptions: Count of unique merchant descriptions
 
     2. Merchant/Description Features:
-        - pct_dash_description: Mean of (description == '-')
         - top_merchant: Most frequent merchant name
         - top_desc_share: Fraction of transactions with most frequent description
         - Binary indicators (1.0 if user has ever transacted with merchant, 0.0 otherwise):
@@ -265,8 +368,6 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
 
     5. Temporal Features:
         - dow_frac__{0-6}: Fraction of transactions on each day of week
-        - num_active_months: Count of unique months with activity
-        - tx_per_month_mean: num_transactions / num_active_months
         - active_days_per_month_mean: Average number of unique days with activity per month
 
     Args:
@@ -287,8 +388,6 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     #################################################################################################
     # Count how many unique merchant descriptions each user has (higher = more diverse merchants)
     features['num_unique_descriptions'] = grp['description'].nunique()
-    # Calculate what percentage of a user's transactions have '-' as the description (higher = more missing merchant info)
-    features['pct_dash_description'] = grp['description'].apply(lambda s: (s == '-').mean())
 
     # Top merchant share: fraction of most frequent description
     def top_desc_share(series: pd.Series) -> float:
@@ -414,75 +513,4 @@ def build_label_frame(transactions: pd.DataFrame) -> pd.DataFrame:
     # One label per user
     labels = transactions[['user_id','gender']].drop_duplicates('user_id').copy()
     return labels
-
-#################################################################################################
-# Visualization functions
-#################################################################################################
-
-def visualize(_df):
-    # === Pre-split visualizations by gender (EDA only) ===
-    # Build user-level features on all users (no leakage into training; this is just EDA)
-    X_all = build_user_features(_df)
-
-    labels_unique = _df[['user_id', 'gender']].drop_duplicates(subset='user_id')
-    X_all_l = X_all.merge(labels_unique, on='user_id', how='left')
-
-    # Mean number of transactions by gender
-    plt.figure(figsize=(5,4))
-    sns.barplot(data=X_all_l, x='gender', y='num_transactions', estimator=np.mean, errorbar=None)
-    plt.title('Mean number of transactions by gender')
-    plt.ylabel('mean num_transactions')
-    plt.show()
-
-    # Mean total spend and income by gender
-    fig, axes = plt.subplots(1, 2, figsize=(10,4))
-    sns.barplot(data=X_all_l, x='gender', y='total_spend', estimator=np.mean, errorbar=None, ax=axes[0])
-    axes[0].set_title('Mean total spend by gender'); axes[0].set_ylabel('mean total_spend')
-    sns.barplot(data=X_all_l, x='gender', y='total_income', estimator=np.mean, errorbar=None, ax=axes[1])
-    axes[1].set_title('Mean total income by gender'); axes[1].set_ylabel('mean total_income')
-    plt.tight_layout(); plt.show()
-
-    # Mean months active and mean active days per month by gender
-    fig, axes = plt.subplots(1, 2, figsize=(10,4))
-    sns.barplot(data=X_all_l, x='gender', y='num_active_months', estimator=np.mean, errorbar=None, ax=axes[0])
-    axes[0].set_title('Mean number of active months by gender'); axes[0].set_ylabel('mean num_active_months')
-    sns.barplot(data=X_all_l, x='gender', y='active_days_per_month_mean', estimator=np.mean, errorbar=None, ax=axes[1])
-    axes[1].set_title('Mean active days per month by gender'); axes[1].set_ylabel('mean active_days_per_month_mean')
-    plt.tight_layout(); plt.show()
-
-    # Mean transaction fraction per category by gender
-    cat_cols = [c for c in X_all.columns if c.startswith('cat_tx_frac__')]
-    cat_long = (
-        X_all_l[['user_id', 'gender'] + cat_cols]
-        .melt(id_vars=['user_id','gender'], var_name='cat', value_name='tx_frac')
-    )
-    cat_long['cat'] = cat_long['cat'].str.replace('cat_tx_frac__', '', regex=False)
-    plt.figure(figsize=(12,6))
-    sns.barplot(data=cat_long, x='cat', y='tx_frac', hue='gender', estimator=np.mean, errorbar=None)
-    plt.title('Mean transaction fraction per category by gender (all users)')
-    plt.xticks(rotation=90); plt.tight_layout(); plt.show()
-
-    # Top 10 merchant descriptions by gender (counts)
-
-    def top_n_merchants_by_gender(df_tx, n=10, drop_dash=True):
-        out = {}
-        for g in ['F', 'M']:
-            gdf = df_tx[df_tx['gender'] == g]
-            desc = gdf['description']
-            if drop_dash:
-                desc = desc[desc != '-']
-            top = desc.value_counts().head(n).reset_index()
-            top.columns = ['description', 'count']
-            out[g] = top
-        return out
-
-    tops = top_n_merchants_by_gender(_df, n=10, drop_dash=True)
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    for ax, g in zip(axes, ['F', 'M']):
-        data = tops[g]
-        sns.barplot(data=data, x='count', y='description', ax=ax, color='steelblue')
-        ax.set_title(f'Top {len(data)} merchants by count — {g}')
-        ax.set_xlabel('count'); ax.set_ylabel('merchant (description)')
-    plt.tight_layout(); plt.show()
 
