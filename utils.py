@@ -514,3 +514,44 @@ def build_label_frame(transactions: pd.DataFrame) -> pd.DataFrame:
     labels = transactions[['user_id','gender']].drop_duplicates('user_id').copy()
     return labels
 
+
+#################################################################################################
+# Model evaluation
+#################################################################################################   
+
+def eval_model(name, model, Xtr, Xva, Xtr_scaled, Xva_scaled, y_train, y_val, scaled=False):
+    if scaled:
+        # train, val, test
+        Xtr_i, Xva_i = Xtr_scaled, Xva_scaled
+    else:
+        Xtr_i, Xva_i = Xtr, Xva
+    yhat_tr = model.predict(Xtr_i)
+    yhat_va = model.predict(Xva_i)
+    metrics = {
+        'model': name,
+        'train_accuracy': accuracy_score(y_train, yhat_tr),
+        'train_precision': precision_score(y_train, yhat_tr),
+        'train_recall': recall_score(y_train, yhat_tr),
+        'train_f1': f1_score(y_train, yhat_tr),
+        'val_accuracy': accuracy_score(y_val, yhat_va),
+        'val_precision': precision_score(y_val, yhat_va),
+        'val_recall': recall_score(y_val, yhat_va),
+        'val_f1': f1_score(y_val, yhat_va),
+    }
+    return metrics, yhat_va, yhat_tr
+
+def test_results(name, model, Xte, Xte_scaled, y_test, scaled=False):
+    if scaled:
+        Xte_i = Xte_scaled
+    else:
+        Xte_i = Xte
+    yhat_te = model.predict(Xte_i)
+    metrics = {
+        'model': name,
+        'test_accuracy': accuracy_score(y_test, yhat_te),
+        'test_precision': precision_score(y_test, yhat_te),
+        'test_recall': recall_score(y_test, yhat_te),
+        'test_f1': f1_score(y_test, yhat_te),
+    }
+    return metrics, yhat_te
+
