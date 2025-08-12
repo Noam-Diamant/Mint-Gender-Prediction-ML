@@ -386,7 +386,7 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     #################################################################################################
     # Merchant/description aggregation
     #################################################################################################
-    # Count how many unique merchant descriptions each user has (higher = more diverse merchants)
+    # Count how many unique merchant descriptions each user has
     features['num_unique_descriptions'] = grp['description'].nunique()
 
     # Top merchant share: fraction of most frequent description
