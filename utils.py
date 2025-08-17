@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Tuple, Dict
 
+
 # sklearn imports
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
@@ -226,32 +227,17 @@ def _safe_div(a: float, b: float) -> float:
 #################################################################################################
 
 def visualize(_df):
-    # === Pre-split visualizations by gender (EDA only) ===
-    # Build user-level features on all users (no leakage into training; this is just EDA)
+    # Build user-level features on all users
     X_all = build_user_features(_df)
 
     labels_unique = _df[['user_id', 'gender']].drop_duplicates(subset='user_id')
     X_all_l = X_all.merge(labels_unique, on='user_id', how='left')
-
+    print("Money Flow analysis:")
     # Mean number of transactions by gender
     plt.figure(figsize=(5,4))
     sns.barplot(data=X_all_l, x='gender', y='num_transactions', estimator=np.mean, errorbar=None)
     plt.title('Mean number of transactions by gender')
     plt.ylabel('mean num_transactions')
-    plt.show()
-
-    # Mean percentage of '-' descriptions by gender (pct of missing/placeholder merchant)
-    # Compute directly from raw transactions to avoid relying on a stored feature
-    dash_share = (
-        _df.groupby('user_id', observed=True)['description']
-           .apply(lambda s: (s == '-').mean())
-           .reset_index(name='pct_dash_description')
-    )
-    dash_share = dash_share.merge(labels_unique, on='user_id', how='left')
-    plt.figure(figsize=(5,4))
-    sns.barplot(data=dash_share, x='gender', y='pct_dash_description', estimator=np.mean, errorbar=None)
-    plt.title("Mean '-' description share by gender")
-    plt.ylabel('mean pct_dash_description')
     plt.show()
 
     # Mean total spend and income by gender
@@ -262,6 +248,8 @@ def visualize(_df):
     axes[1].set_title('Mean total income by gender'); axes[1].set_ylabel('mean total_income')
     plt.tight_layout(); plt.show()
 
+    print("Temporal analysis:")
+
     # Mean months active and mean active days per month by gender
     fig, axes = plt.subplots(1, 2, figsize=(10,4))
     sns.barplot(data=X_all_l, x='gender', y='num_active_months', estimator=np.mean, errorbar=None, ax=axes[0])
@@ -269,18 +257,6 @@ def visualize(_df):
     sns.barplot(data=X_all_l, x='gender', y='active_days_per_month_mean', estimator=np.mean, errorbar=None, ax=axes[1])
     axes[1].set_title('Mean active days per month by gender'); axes[1].set_ylabel('mean active_days_per_month_mean')
     plt.tight_layout(); plt.show()
-
-    # Mean transaction fraction per category by gender
-    cat_cols = [c for c in X_all.columns if c.startswith('cat_tx_frac__')]
-    cat_long = (
-        X_all_l[['user_id', 'gender'] + cat_cols]
-        .melt(id_vars=['user_id','gender'], var_name='cat', value_name='tx_frac')
-    )
-    cat_long['cat'] = cat_long['cat'].str.replace('cat_tx_frac__', '', regex=False)
-    plt.figure(figsize=(12,6))
-    sns.barplot(data=cat_long, x='cat', y='tx_frac', hue='gender', estimator=np.mean, errorbar=None)
-    plt.title('Mean transaction fraction per category by gender (all users)')
-    plt.xticks(rotation=90); plt.tight_layout(); plt.show()
 
     # Fraction of transactions on each day of week by gender (mean per-user)
     dow_cols = [c for c in X_all.columns if c.startswith('dow_frac__')]
@@ -297,6 +273,76 @@ def visualize(_df):
     plt.title('Mean fraction of transactions by day-of-week (by gender)')
     plt.xlabel('day of week'); plt.ylabel('mean fraction')
     plt.tight_layout(); plt.show()
+
+    # Weekday vs Weekend transactions
+    _df['is_weekend'] = _df['dayofweek'].isin([5, 6])
+    weekday_counts = _df.groupby(['user_id', 'is_weekend', 'gender']).size().reset_index(name='count')
+    plt.figure(figsize=(10, 5))
+    sns.boxplot(data=weekday_counts, x='is_weekend', y='count', hue='gender')
+    plt.title('Number of Transactions: Weekday vs Weekend by Gender')
+    plt.xlabel('Is Weekend')
+    plt.ylabel('Number of Transactions')
+    plt.ylim(0, 2500)
+    plt.show()
+
+    # Monthly spending over time
+    _df['yearmonth'] = _df['date'].dt.to_period('M')
+    monthly_spend = _df.groupby(['yearmonth', 'gender', 'user_id'])['amount'].sum().reset_index()
+    monthly_avg = monthly_spend.groupby(['yearmonth', 'gender'])['amount'].mean().reset_index()
+
+    plt.figure(figsize=(15, 5))
+    # Plot reference lines first
+    plt.axhline(y=1000, color='red', linestyle='--', alpha=0.5, label='$1000 threshold')
+    plt.axhline(y=1500, color='red', linestyle='--', alpha=0.5, label='$1500 threshold')
+    
+    # Plot gender lines
+    for gender in ['F', 'M']:
+        gender_data = monthly_avg[monthly_avg['gender'] == gender]
+        plt.plot(gender_data['yearmonth'].astype(str), gender_data['amount'], label=gender)
+    plt.title('Average Monthly Spending Over Time by Gender')
+    plt.xticks(rotation=45)
+    plt.xlabel('Month')
+    plt.ylabel('Average Amount')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    print("Category analysis:")
+
+    # Mean transaction fraction per category by gender
+    cat_cols = [c for c in X_all.columns if c.startswith('cat_tx_frac__')]
+    cat_long = (
+        X_all_l[['user_id', 'gender'] + cat_cols]
+        .melt(id_vars=['user_id','gender'], var_name='cat', value_name='tx_frac')
+    )
+    cat_long['cat'] = cat_long['cat'].str.replace('cat_tx_frac__', '', regex=False)
+    plt.figure(figsize=(12,6))
+    sns.barplot(data=cat_long, x='cat', y='tx_frac', hue='gender', estimator=np.mean, errorbar=None)
+    plt.title('Mean transaction fraction per category by gender (all users)')
+    plt.xticks(rotation=90); plt.tight_layout(); plt.show()
+
+    # Number of unique categories per user
+    unique_cats = _df.groupby(['user_id', 'gender'])['category'].nunique().reset_index()
+    plt.figure(figsize=(10, 5))
+    sns.histplot(data=unique_cats, x='category', hue='gender', multiple="layer", stat='density')
+    plt.title('Distribution of Unique Categories per User by Gender')
+    plt.xlabel('Number of Unique Categories')
+    plt.show()
+
+    print("Merchant analysis:")
+    # Mean percentage of '-' descriptions by gender (pct of missing/placeholder merchant)
+    # Compute directly from raw transactions to avoid relying on a stored feature
+    dash_share = (
+        _df.groupby('user_id', observed=True)['description']
+           .apply(lambda s: (s == '-').mean())
+           .reset_index(name='pct_dash_description')
+    )
+    dash_share = dash_share.merge(labels_unique, on='user_id', how='left')
+    plt.figure(figsize=(5,4))
+    sns.barplot(data=dash_share, x='gender', y='pct_dash_description', estimator=np.mean, errorbar=None)
+    plt.title("Mean '-' description share by gender")
+    plt.ylabel('mean pct_dash_description')
+    plt.show()
 
     # Top 10 merchant descriptions by gender (counts)
 
@@ -321,6 +367,17 @@ def visualize(_df):
         ax.set_title(f'Top {len(data)} merchants by count — {g}')
         ax.set_xlabel('count'); ax.set_ylabel('merchant (description)')
     plt.tight_layout(); plt.show()
+
+    print("Correlation matrix of numeric features:")
+    # Correlation matrix of numeric features
+    numeric_cols = ['total_income', 'total_spend', 'num_transactions', 'amount_std']
+    corr_matrix = X_all_l[numeric_cols].corr()
+
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0)
+    plt.title('Correlation Matrix of Key Numeric Features')
+    plt.tight_layout()
+    plt.show()
 
 
 
@@ -475,6 +532,29 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     #################################################################################################
     # Temporal aggregation
     #################################################################################################
+    
+    # Specific month spending thresholds
+    tx['yearmonth'] = tx['date'].dt.to_period('M')
+    monthly_spend = tx.groupby(['user_id', 'yearmonth'])['amount'].sum().reset_index()
+    
+    # March 2016 spending > 1300
+    march_2016_spend = monthly_spend[monthly_spend['yearmonth'] == pd.Period('2016-03')].set_index('user_id')['amount']
+    features['spend_over_1300_march_2016'] = march_2016_spend.map(lambda x: float(x > 1300)).fillna(0.0)
+    
+    # July 2016 spending > 1500
+    july_2016_spend = monthly_spend[monthly_spend['yearmonth'] == pd.Period('2016-07')].set_index('user_id')['amount']
+    features['spend_over_1500_july_2016'] = july_2016_spend.map(lambda x: float(x > 1500)).fillna(0.0)
+    
+    # October 2016 spending > 800
+    oct_2016_spend = monthly_spend[monthly_spend['yearmonth'] == pd.Period('2016-10')].set_index('user_id')['amount']
+    features['spend_over_800_oct_2016'] = oct_2016_spend.map(lambda x: float(x > 800)).fillna(0.0)
+    
+    # July 2016 spending < 600
+    features['spend_under_600_july_2016'] = july_2016_spend.map(lambda x: float(x < 600)).fillna(0.0)
+    
+    # October 2016 spending < 0
+    features['spend_under_0_oct_2016'] = oct_2016_spend.map(lambda x: float(x < 0)).fillna(0.0)
+    
     # Temporal: fraction by day-of-week
     for d in DAYS:
         features[f'dow_frac__{d}'] = grp['dayofweek'].apply(lambda s, d=d: (s == d).mean())
