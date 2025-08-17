@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 from dataclasses import dataclass
 from typing import Tuple, Dict
+import xgboost as xgb
 
 
 # sklearn imports
@@ -204,6 +205,11 @@ category_mapping = {
 
 # === Helper functions: leakage-safe feature builder ===
 
+# Top 10 merchants (pre-computed to avoid data leakage)
+TOP_10_MERCHANTS = [
+    'Target', 'Amazon', 'Starbucks', 'Uber.com', 'Wal-Mart',
+    'iTunes', 'McDonald\'s', 'CVS', 'Shell', 'Whole Foods', '7-Eleven', 'Lyft'
+]
 
 MAIN_CATEGORIES = [
     'Entertainment','Shopping','Personal Care','Health & Fitness','Kids',
@@ -230,33 +236,68 @@ def visualize(_df):
     # Build user-level features on all users
     X_all = build_user_features(_df)
 
+    # Add extra features just for correlation analysis
+    grp = _df.groupby('user_id', observed=True)
+    
+    # Calculate total spend (sum of negative amounts)
+    total_spend = grp['amount'].apply(lambda x: abs(x[x < 0].sum())).reset_index(name='total_spend')
+    X_all = X_all.merge(total_spend, on='user_id', how='left')
+    
+    # Calculate number of transactions
+    num_transactions = grp.size().reset_index(name='num_transactions')
+    X_all = X_all.merge(num_transactions, on='user_id', how='left')
+    
+    # Calculate amount standard deviation
+    amount_std = grp['amount'].std().reset_index(name='amount_std')
+    X_all = X_all.merge(amount_std, on='user_id', how='left')
+    
+    # Calculate positive ratio
+    pos_ratio = grp['amount'].apply(lambda x: (x > 0).mean()).reset_index(name='pos_ratio')
+    X_all = X_all.merge(pos_ratio, on='user_id', how='left')
+    
+    # Calculate fraction of income transactions
+    frac_income_tx = grp['amount'].apply(lambda x: (x > 0).mean()).reset_index(name='frac_income_tx')
+    X_all = X_all.merge(frac_income_tx, on='user_id', how='left')
+
     labels_unique = _df[['user_id', 'gender']].drop_duplicates(subset='user_id')
     X_all_l = X_all.merge(labels_unique, on='user_id', how='left')
     print("Money Flow analysis:")
-    # Mean number of transactions by gender
+    # Mean transactions per month by gender
     plt.figure(figsize=(5,4))
-    sns.barplot(data=X_all_l, x='gender', y='num_transactions', estimator=np.mean, errorbar=None)
-    plt.title('Mean number of transactions by gender')
-    plt.ylabel('mean num_transactions')
+    sns.barplot(data=X_all_l, x='gender', y='transactions_per_month_mean', estimator=np.mean, errorbar=None)
+    plt.title('Mean Transactions per Month by Gender')
+    plt.ylabel('Mean Transactions per Month')
     plt.show()
 
-    # Mean total spend and income by gender
+    # Mean income and spend by gender
     fig, axes = plt.subplots(1, 2, figsize=(10,4))
-    sns.barplot(data=X_all_l, x='gender', y='total_spend', estimator=np.mean, errorbar=None, ax=axes[0])
-    axes[0].set_title('Mean total spend by gender'); axes[0].set_ylabel('mean total_spend')
-    sns.barplot(data=X_all_l, x='gender', y='total_income', estimator=np.mean, errorbar=None, ax=axes[1])
-    axes[1].set_title('Mean total income by gender'); axes[1].set_ylabel('mean total_income')
-    plt.tight_layout(); plt.show()
+    sns.barplot(data=X_all_l, x='gender', y='total_income', estimator=np.mean, errorbar=None, ax=axes[0])
+    axes[0].set_title('Mean Total Income by Gender')
+    axes[0].set_ylabel('Mean Total Income')
+    
+    sns.barplot(data=X_all_l, x='gender', y='total_spend', estimator=np.mean, errorbar=None, ax=axes[1])
+    axes[1].set_title('Mean Total Spend by Gender')
+    axes[1].set_ylabel('Mean Total Spend')
+    plt.tight_layout()
+    plt.show()
 
     print("Temporal analysis:")
 
-    # Mean months active and mean active days per month by gender
+    # Calculate number of active months
+    _df['yyyymm'] = _df['date'].dt.to_period('M')  # Create yearmonth column first
+    active_months = _df.groupby(['user_id', 'gender'])['yyyymm'].nunique().reset_index(name='num_active_months')
+
+    # Mean active days and months by gender
     fig, axes = plt.subplots(1, 2, figsize=(10,4))
-    sns.barplot(data=X_all_l, x='gender', y='num_active_months', estimator=np.mean, errorbar=None, ax=axes[0])
-    axes[0].set_title('Mean number of active months by gender'); axes[0].set_ylabel('mean num_active_months')
-    sns.barplot(data=X_all_l, x='gender', y='active_days_per_month_mean', estimator=np.mean, errorbar=None, ax=axes[1])
-    axes[1].set_title('Mean active days per month by gender'); axes[1].set_ylabel('mean active_days_per_month_mean')
-    plt.tight_layout(); plt.show()
+    sns.barplot(data=X_all_l, x='gender', y='active_days_per_month_mean', estimator=np.mean, errorbar=None, ax=axes[0])
+    axes[0].set_title('Mean Active Days per Month by Gender')
+    axes[0].set_ylabel('Mean Active Days per Month')
+    
+    sns.barplot(data=active_months, x='gender', y='num_active_months', estimator=np.mean, errorbar=None, ax=axes[1])
+    axes[1].set_title('Mean Number of Active Months by Gender')
+    axes[1].set_ylabel('Mean Active Months')
+    plt.tight_layout()
+    plt.show()
 
     # Fraction of transactions on each day of week by gender (mean per-user)
     dow_cols = [c for c in X_all.columns if c.startswith('dow_frac__')]
@@ -292,8 +333,12 @@ def visualize(_df):
 
     plt.figure(figsize=(15, 5))
     # Plot reference lines first
-    plt.axhline(y=1000, color='red', linestyle='--', alpha=0.5, label='$1000 threshold')
-    plt.axhline(y=1500, color='red', linestyle='--', alpha=0.5, label='$1500 threshold')
+    plt.axhline(y=1000, color='red', linestyle='--', alpha=0.5, label='$1000 threshold (March 2016)')
+    plt.axhline(y=1300, color='red', linestyle='--', alpha=0.5, label='$1300 threshold (March 2016)')
+    plt.axhline(y=1500, color='blue', linestyle='--', alpha=0.5, label='$1500 threshold (July 2016)') 
+    plt.axhline(y=600, color='blue', linestyle='--', alpha=0.5, label='$600 threshold (July 2016)')
+    plt.axhline(y=0, color='green', linestyle='--', alpha=0.5, label='$0 threshold (Oct 2016)')
+    plt.axhline(y=800, color='green', linestyle='--', alpha=0.5, label='$800 threshold (Oct 2016)')
     
     # Plot gender lines
     for gender in ['F', 'M']:
@@ -318,7 +363,8 @@ def visualize(_df):
     cat_long['cat'] = cat_long['cat'].str.replace('cat_tx_frac__', '', regex=False)
     plt.figure(figsize=(12,6))
     sns.barplot(data=cat_long, x='cat', y='tx_frac', hue='gender', estimator=np.mean, errorbar=None)
-    plt.title('Mean transaction fraction per category by gender (all users)')
+    plt.yscale('log')  # Set y-axis to log scale
+    plt.title('Mean transaction fraction per category by gender (all users) - Log Scale')
     plt.xticks(rotation=90); plt.tight_layout(); plt.show()
 
     # Number of unique categories per user
@@ -327,6 +373,7 @@ def visualize(_df):
     sns.histplot(data=unique_cats, x='category', hue='gender', multiple="layer", stat='density')
     plt.title('Distribution of Unique Categories per User by Gender')
     plt.xlabel('Number of Unique Categories')
+    plt.xscale('log')  # Set x-axis to log scale
     plt.show()
 
     print("Merchant analysis:")
@@ -360,45 +407,59 @@ def visualize(_df):
 
     tops = top_n_merchants_by_gender(_df, n=10, drop_dash=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-    for ax, g in zip(axes, ['F', 'M']):
-        data = tops[g]
-        sns.barplot(data=data, x='count', y='description', ax=ax, color='steelblue')
-        ax.set_title(f'Top {len(data)} merchants by count — {g}')
-        ax.set_xlabel('count'); ax.set_ylabel('merchant (description)')
-    plt.tight_layout(); plt.show()
+    # Combine data from both genders into one dataframe
+    df_combined = pd.concat([
+        tops['F'].assign(gender='F'),
+        tops['M'].assign(gender='M')
+    ])
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=df_combined, x='count', y='description', hue='gender', palette=['lightcoral', 'steelblue'])
+    plt.title('Top 10 merchants by count and gender')
+    plt.xlabel('count')
+    plt.ylabel('merchant (description)')
+    plt.tight_layout()
+    plt.show()
 
     print("Correlation matrices:")
     # Correlation matrix of numeric features
+    # All numeric features we want to analyze (if available)
     numeric_cols = [
+        # Basic metrics
         'total_income', 'total_spend', 'num_transactions', 'amount_std',
         'amount_mean', 'amount_min', 'amount_max', 'pos_ratio',
         'frac_spend_tx', 'frac_income_tx', 'num_active_months',
-        'tx_per_month_mean', 'num_unique_descriptions',
+        'transactions_per_month_mean', 'num_unique_descriptions',
         'active_days_per_month_mean', 'top_desc_share',
+        
+        # Category features
         'cat_tx_frac__Food & Dining', 'cat_tx_frac__Shopping',
         'cat_spend_share__Food & Dining', 'cat_spend_share__Shopping',
         'dow_frac__0', 'dow_frac__5', 'dow_frac__6'
     ]
-    corr_matrix = X_all_l[numeric_cols].corr()
+    
+    # Filter to only include columns that exist in the data
+    available_cols = [col for col in numeric_cols if col in X_all_l.columns]
+    corr_matrix = X_all_l[available_cols].corr()
 
-    plt.figure(figsize=(14, 12))  # Increased figure size to accommodate more features
+    # Plot main correlation matrix
+    plt.figure(figsize=(12, 10))
     sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, fmt='.2f')
-    plt.title('Correlation Matrix of Numeric Features')
+    plt.title('Correlation Matrix of All Features')
     plt.xticks(rotation=45, ha='right')
     plt.yticks(rotation=0)
     plt.tight_layout()
     plt.show()
-
-    # Separate correlation matrix for spending threshold features
+    
+    # Plot spending threshold correlation matrix
     threshold_cols = [
-        'spend_over_1300_march_2016', 'spend_over_1500_july_2016',  
-        'spend_over_800_oct_2016', 'spend_under_600_july_2016',
-        'spend_under_0_oct_2016'
+        'spend_over_1300_march_2016', 'spend_under_1000_march_2016',
+        'spend_over_1500_july_2016', 'spend_under_600_july_2016',
+        'spend_over_800_oct_2016', 'spend_under_0_oct_2016'
     ]
     threshold_corr = X_all_l[threshold_cols].corr()
-
-    plt.figure(figsize=(8, 6))
+    
+    plt.figure(figsize=(10, 8))
     sns.heatmap(threshold_corr, annot=True, cmap='coolwarm', center=0, fmt='.2f')
     plt.title('Correlation Matrix of Spending Threshold Features')
     plt.xticks(rotation=45, ha='right')
@@ -420,29 +481,19 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     Feature Groups and Aggregation Methods:
 
     1. Basic Transaction Counts:
-        - num_transactions: Count of total transactions per user
         - num_unique_descriptions: Count of unique merchant descriptions
 
     2. Merchant/Description Features:
-        - top_merchant: Most frequent merchant name
         - top_desc_share: Fraction of transactions with most frequent description
         - Binary indicators (1.0 if user has ever transacted with merchant, 0.0 otherwise):
-        - has_cvs: Ever shopped at CVS
-        - has_whole_foods: Ever shopped at Whole Foods
-        - has_7_eleven: Ever shopped at 7-Eleven
-        - has_lyft: Ever used Lyft
+        - has_{merchant}: One feature per top 10 merchant (TARGET, AMAZON, etc.)
 
     3. Amount-based Features:
         - amount_mean: Mean transaction amount
-        - amount_std: Standard deviation of amounts
         - amount_min: Minimum transaction amount
         - amount_max: Maximum transaction amount
-        - amount_count: Count of transactions
-        - total_spend: Sum of all negative amounts (absolute value)
         - total_income: Sum of all positive amounts
-        - pos_ratio: Fraction of positive amount transactions
         - frac_spend_tx: Fraction of negative amount transactions
-        - frac_income_tx: Fraction of positive amount transactions
 
     4. Category Distribution Features:
         For each main category, two features are computed:
@@ -451,9 +502,12 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
                                      (only negative amounts considered)
 
     5. Temporal Features:
+        - transactions_per_month_mean: Average number of transactions per month
+        - num_active_months: Total number of months with any activity
         - dow_frac__{0-6}: Fraction of transactions on each day of week
         - active_days_per_month_mean: Average number of unique days with activity per month
         - spend_over_1300_march_2016: Binary indicator if March 2016 spending > $1300
+        - spend_under_1000_march_2016: Binary indicator if March 2016 spending < $1000
         - spend_over_1500_july_2016: Binary indicator if July 2016 spending > $1500  
         - spend_over_800_oct_2016: Binary indicator if October 2016 spending > $800
         - spend_under_600_july_2016: Binary indicator if July 2016 spending < $600
@@ -470,7 +524,6 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     # Base counts
     grp = tx.groupby('user_id', observed=True)
     features = pd.DataFrame(index=grp.size().index)
-    features['num_transactions'] = grp.size()
 
     #################################################################################################
     # Merchant/description aggregation
@@ -491,49 +544,32 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
         """Returns 1.0 if user has ever transacted with merchant, 0.0 otherwise"""
         return float(df_user['description'].str.contains(merchant, case=False).any())
 
-    # Track if user ever purchased at specific merchants
-    features['has_cvs'] = grp.apply(lambda g: has_merchant(g, 'CVS'))
-    features['has_whole_foods'] = grp.apply(lambda g: has_merchant(g, 'Whole Foods'))
-    features['has_7_eleven'] = grp.apply(lambda g: has_merchant(g, '7-Eleven'))
-    features['has_lyft'] = grp.apply(lambda g: has_merchant(g, 'Lyft'))
+    # Track if user ever purchased at top 10 merchants
+    for merchant in TOP_10_MERCHANTS:
+        features[f'has_{merchant.lower().replace(" ", "_")}'] = grp.apply(lambda g: has_merchant(g, merchant))
 
     #################################################################################################
-    # Spend/income aggregation
+    # Amount-based Features
     #################################################################################################
-
     # Dictionary defining aggregation functions to apply to 'amount' column:
     agg_dict = {
-        'amount': ['mean','std','min','max', 'count']
+        'amount': ['mean','min','max']
     }
-    spend_income = grp.agg(agg_dict)
+    amount_stats = grp.agg(agg_dict)
     # Flatten columns
-    spend_income.columns = ['_'.join(col) for col in spend_income.columns]
-    features = features.join(spend_income)
+    amount_stats.columns = ['_'.join(col) for col in amount_stats.columns]
+    features = features.join(amount_stats)
     
-    # Calculate total spend (sum of negative amounts) and total income (sum of positive amounts)
-    def calc_total_spend(amounts: pd.Series) -> float:
-        return amounts[amounts < 0].abs().sum()
+    # Calculate total income (sum of positive amounts)
     def calc_total_income(amounts: pd.Series) -> float:
         return amounts[amounts > 0].sum()
     
-    features['total_spend'] = grp['amount'].apply(calc_total_spend)
     features['total_income'] = grp['amount'].apply(calc_total_income)
 
-    # Add positive transaction ratio
-    pos_ratio = grp['amount'].apply(lambda x: (x > 0).sum() / len(x))
-    features['pos_ratio'] = pos_ratio
-
-    # Replace NaNs in std for users with <2 transactions
-    for c in [c for c in features.columns if c.endswith('_std')]:
-        features[c] = features[c].fillna(0.0)
-
-    # Fraction of transactions that are spend/income
+    # Fraction of transactions that are spend
     def frac_spend(series: pd.Series) -> float:
         return (series < 0.0).mean()
-    def frac_income(series: pd.Series) -> float:
-        return (series > 0.0).mean()
     features['frac_spend_tx'] = grp['amount'].apply(frac_spend)
-    features['frac_income_tx'] = grp['amount'].apply(frac_income)
 
     #################################################################################################
     # Category aggregation
@@ -575,9 +611,10 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     tx['yearmonth'] = tx['date'].dt.to_period('M')
     monthly_spend = tx.groupby(['user_id', 'yearmonth'])['amount'].sum().reset_index()
     
-    # March 2016 spending > 1300
+    # March 2016 spending thresholds
     march_2016_spend = monthly_spend[monthly_spend['yearmonth'] == pd.Period('2016-03')].set_index('user_id')['amount']
     features['spend_over_1300_march_2016'] = march_2016_spend.map(lambda x: float(x > 1300)).fillna(0.0)
+    features['spend_under_1000_march_2016'] = march_2016_spend.map(lambda x: float(x < 1000)).fillna(0.0)
     
     # July 2016 spending > 1500
     july_2016_spend = monthly_spend[monthly_spend['yearmonth'] == pd.Period('2016-07')].set_index('user_id')['amount']
@@ -592,22 +629,21 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     
     # October 2016 spending < 0
     features['spend_under_0_oct_2016'] = oct_2016_spend.map(lambda x: float(x < 0)).fillna(0.0)
+    # Calculate transactions per month
+    monthly_tx_counts = tx.groupby(['user_id', 'yearmonth']).size().reset_index(name='count')
+    features['transactions_per_month_mean'] = monthly_tx_counts.groupby('user_id')['count'].mean()
+
     # Temporal: fraction by day-of-week
     for d in DAYS:
         features[f'dow_frac__{d}'] = grp['dayofweek'].apply(lambda s, d=d: (s == d).mean())
 
-    # Activity span in months and transactions per active month
+    # Activity span in months and active days
     # Convert dates to year-month periods (e.g. 2016-12) and extract day
     tx['yyyymm'] = tx['date'].dt.to_period('M')
     tx['day'] = tx['date'].dt.day
     
     # Count unique months per user to get their activity span
-    months = tx.groupby('user_id', observed=True)['yyyymm'].nunique()
-    features['num_active_months'] = months
-    
-    # Calculate average transactions per month
-    # Replace 0 months with 1 to avoid division by zero
-    features['tx_per_month_mean'] = features['num_transactions'] / features['num_active_months'].replace(0, 1)
+    features['num_active_months'] = grp['yyyymm'].nunique()
     
     # Calculate average number of active days per month
     def calc_active_days_per_month(df: pd.DataFrame) -> float:
