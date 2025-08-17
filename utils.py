@@ -365,6 +365,7 @@ def visualize(_df):
     sns.barplot(data=cat_long, x='cat', y='tx_frac', hue='gender', estimator=np.mean, errorbar=None)
     plt.yscale('log')  # Set y-axis to log scale
     plt.title('Mean transaction fraction per category by gender (all users) - Log Scale')
+    plt.ylabel('category transactions fraction')
     plt.xticks(rotation=90); plt.tight_layout(); plt.show()
 
     # Number of unique categories per user
@@ -373,7 +374,7 @@ def visualize(_df):
     sns.histplot(data=unique_cats, x='category', hue='gender', multiple="layer", stat='density')
     plt.title('Distribution of Unique Categories per User by Gender')
     plt.xlabel('Number of Unique Categories')
-    plt.xscale('log')  # Set x-axis to log scale
+    plt.yscale('log')  # Set x-axis to log scale
     plt.show()
 
     print("Merchant analysis:")
@@ -496,7 +497,7 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
         - frac_spend_tx: Fraction of negative amount transactions
 
     4. Category Distribution Features:
-        For each main category, two features are computed:
+        For each category, two features are computed:
         - cat_tx_frac__{category}: Fraction of transactions in category
         - cat_spend_share__{category}: Share of total spending in category
                                      (only negative amounts considered)
@@ -580,7 +581,7 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     def frac_by_cat(s: pd.Series, cat: str) -> float:
         # Returns the fraction of values in series s that match the given category
         return (s == cat).mean()
-    for cat in MAIN_CATEGORIES:
+    #for cat in MAIN_CATEGORIES:
         # Create feature for each category showing what fraction of transactions are in that category
         features[f'cat_tx_frac__{cat}'] = grp['category'].apply(lambda s, c=cat: frac_by_cat(s, c))
 
