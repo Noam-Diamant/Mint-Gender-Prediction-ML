@@ -354,8 +354,11 @@ def visualize(_df):
 
     print("Category analysis:")
 
-    # Mean transaction fraction per category by gender
-    cat_cols = [c for c in X_all.columns if c.startswith('cat_tx_frac__')]
+    # Mean transaction fraction per main category by gender
+    # Filter to only include main categories that exist in our features
+    available_main_cats = [cat for cat in MAIN_CATEGORIES 
+                          if f'cat_tx_frac__{cat}' in X_all_l.columns]
+    cat_cols = [f'cat_tx_frac__{cat}' for cat in available_main_cats]
     cat_long = (
         X_all_l[['user_id', 'gender'] + cat_cols]
         .melt(id_vars=['user_id','gender'], var_name='cat', value_name='tx_frac')
@@ -364,8 +367,9 @@ def visualize(_df):
     plt.figure(figsize=(12,6))
     sns.barplot(data=cat_long, x='cat', y='tx_frac', hue='gender', estimator=np.mean, errorbar=None)
     plt.yscale('log')  # Set y-axis to log scale
-    plt.title('Mean transaction fraction per category by gender (all users) - Log Scale')
+    plt.title('Mean transaction fraction per main category by gender (all users)')
     plt.ylabel('category transactions fraction')
+    plt.xlabel('category')
     plt.xticks(rotation=90); plt.tight_layout(); plt.show()
 
     # Number of unique categories per user
@@ -374,7 +378,6 @@ def visualize(_df):
     sns.histplot(data=unique_cats, x='category', hue='gender', multiple="layer", stat='density')
     plt.title('Distribution of Unique Categories per User by Gender')
     plt.xlabel('Number of Unique Categories')
-    plt.yscale('log')  # Set x-axis to log scale
     plt.show()
 
     print("Merchant analysis:")
@@ -581,12 +584,15 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     def frac_by_cat(s: pd.Series, cat: str) -> float:
         # Returns the fraction of values in series s that match the given category
         return (s == cat).mean()
-    #for cat in MAIN_CATEGORIES:
+
+    # Calculate fraction of transactions for each raw category
+    all_categories = tx['category'].unique()
+    for cat in all_categories:
         # Create feature for each category showing what fraction of transactions are in that category
         features[f'cat_tx_frac__{cat}'] = grp['category'].apply(lambda s, c=cat: frac_by_cat(s, c))
 
     # Category distribution by spend share (only negative amounts)
-    # For each main category, calculate what percentage of a user's total spending is in that category
+    # For each category, calculate what percentage of a user's total spending is in that category
     def spend_share_for_cat(df_user: pd.DataFrame, cat: str) -> float:
         # Calculate total amount spent in this category (negative amounts only)
         spent = df_user.loc[(df_user['category'] == cat) & (df_user['amount'] < 0.0), 'amount'].abs().sum()
@@ -594,7 +600,8 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
         total_spent = df_user.loc[df_user['amount'] < 0.0, 'amount'].abs().sum()
         # Return category spend as fraction of total spend, handling division by zero
         return _safe_div(spent, total_spent)
-    for cat in MAIN_CATEGORIES:
+
+    for cat in all_categories:
         # Create feature for each category showing what fraction of total spend is in that category
         features[f'cat_spend_share__{cat}'] = grp.apply(lambda g, c=cat: spend_share_for_cat(g, c))
 
