@@ -368,18 +368,45 @@ def visualize(_df):
         ax.set_xlabel('count'); ax.set_ylabel('merchant (description)')
     plt.tight_layout(); plt.show()
 
-    print("Correlation matrix of numeric features:")
+    print("Correlation matrices:")
     # Correlation matrix of numeric features
-    numeric_cols = ['total_income', 'total_spend', 'num_transactions', 'amount_std']
+    numeric_cols = [
+        'total_income', 'total_spend', 'num_transactions', 'amount_std',
+        'amount_mean', 'amount_min', 'amount_max', 'pos_ratio',
+        'frac_spend_tx', 'frac_income_tx', 'num_active_months',
+        'tx_per_month_mean', 'num_unique_descriptions',
+        'active_days_per_month_mean', 'top_desc_share',
+        'cat_tx_frac__Food & Dining', 'cat_tx_frac__Shopping',
+        'cat_spend_share__Food & Dining', 'cat_spend_share__Shopping',
+        'dow_frac__0', 'dow_frac__5', 'dow_frac__6'
+    ]
     corr_matrix = X_all_l[numeric_cols].corr()
 
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0)
-    plt.title('Correlation Matrix of Key Numeric Features')
+    plt.figure(figsize=(14, 12))  # Increased figure size to accommodate more features
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, fmt='.2f')
+    plt.title('Correlation Matrix of Numeric Features')
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
     plt.tight_layout()
     plt.show()
 
+    # Separate correlation matrix for spending threshold features
+    threshold_cols = [
+        'spend_over_1300_march_2016', 'spend_over_1500_july_2016',  
+        'spend_over_800_oct_2016', 'spend_under_600_july_2016',
+        'spend_under_0_oct_2016'
+    ]
+    threshold_corr = X_all_l[threshold_cols].corr()
 
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(threshold_corr, annot=True, cmap='coolwarm', center=0, fmt='.2f')
+    plt.title('Correlation Matrix of Spending Threshold Features')
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    plt.show()
+
+    
 
 #################################################################################################
 # Feature builder
@@ -426,6 +453,11 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     5. Temporal Features:
         - dow_frac__{0-6}: Fraction of transactions on each day of week
         - active_days_per_month_mean: Average number of unique days with activity per month
+        - spend_over_1300_march_2016: Binary indicator if March 2016 spending > $1300
+        - spend_over_1500_july_2016: Binary indicator if July 2016 spending > $1500  
+        - spend_over_800_oct_2016: Binary indicator if October 2016 spending > $800
+        - spend_under_600_july_2016: Binary indicator if July 2016 spending < $600
+        - spend_under_0_oct_2016: Binary indicator if October 2016 spending < $0 (net income)
 
     Args:
         transactions: DataFrame with columns [user_id, description, category, amount, date]
@@ -534,6 +566,12 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     #################################################################################################
     
     # Specific month spending thresholds
+    # These features capture whether users exceed certain spending thresholds in specific months:
+    # - spend_over_1300_march_2016: Binary indicator if March 2016 spending > $1300
+    # - spend_over_1500_july_2016: Binary indicator if July 2016 spending > $1500  
+    # - spend_over_800_oct_2016: Binary indicator if October 2016 spending > $800
+    # - spend_under_600_july_2016: Binary indicator if July 2016 spending < $600
+    # - spend_under_0_oct_2016: Binary indicator if October 2016 spending < $0 (net income)
     tx['yearmonth'] = tx['date'].dt.to_period('M')
     monthly_spend = tx.groupby(['user_id', 'yearmonth'])['amount'].sum().reset_index()
     
@@ -554,7 +592,6 @@ def build_user_features(transactions: pd.DataFrame) -> pd.DataFrame:
     
     # October 2016 spending < 0
     features['spend_under_0_oct_2016'] = oct_2016_spend.map(lambda x: float(x < 0)).fillna(0.0)
-    
     # Temporal: fraction by day-of-week
     for d in DAYS:
         features[f'dow_frac__{d}'] = grp['dayofweek'].apply(lambda s, d=d: (s == d).mean())
